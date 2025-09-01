@@ -37,7 +37,7 @@ const userSchema = new mongoose.Schema({
   passwordHash: String,
   name: String,
   role: { type: String, enum: ['user','admin'], default: 'user' },
-  walletAddress: { type: String, default: null, index: true, sparse: true },
+  walletAddress: { type: String, default: null, index: true, sparse: true }, // This line is the problem
   hasVotedOn: { type: Map, of: Boolean, default: {} },
   walletNonce: { type: String, default: null },
 }, { timestamps: true });
