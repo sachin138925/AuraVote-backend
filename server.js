@@ -663,14 +663,66 @@ app.get('/api/elections/active', async (req,res) => {
 
 app.get('/api/elections/results', async (req, res) => {
     try {
-        const el = await Election.findOne({
-          $or: [{ closed: true }, { endAt: { $ne: null, $lt: new Date() }}]
-        }).sort({ createdAt: -1 }).lean();
+        const { id } = req.query;
+        const now = new Date();
+        let election;
 
-        if (!el) return res.status(404).json({ msg: 'No completed election results found.' });
-        res.json({ title: el.title, results: el.candidates });
+        if (id) {
+            // If a specific ID is requested, find that election.
+            election = await Election.findOne({ onChainId: id }).lean();
+        } else {
+            // Otherwise, find the default election (active first, then most recently finished).
+            // 1. Try to find an active election first.
+            election = await Election.findOne({ 
+                closed: false,
+                $or: [{ startAt: null }, { startAt: { $lte: now } }],
+                $or: [{ endAt: null }, { endAt: { $gte: now }}]
+            }).sort({ createdAt: -1 }).lean();
+
+            // 2. If no active election is found, find the most recently finished one.
+            if (!election) {
+                election = await Election.findOne({
+                    $or: [{ closed: true }, { endAt: { $ne: null, $lt: now }}]
+                }).sort({ endAt: -1 }).lean();
+            }
+        }
+        
+        if (!election) return res.status(404).json({ msg: 'No election results found.' });
+        
+        // Add a status field to the response for the frontend
+        let status = 'Finished';
+        if (election.closed) {
+            status = 'Closed';
+        } else {
+            const start = election.startAt ? new Date(election.startAt) : null;
+            const end = election.endAt ? new Date(election.endAt) : null;
+            if (start && now < start) status = 'Scheduled';
+            else if (end && now > end) status = 'Finished';
+            else status = 'Live';
+        }
+
+        res.json({ title: election.title, results: election.candidates, status });
+
     } catch(err) {
         console.error('results err', err);
+        res.status(500).json({ msg: 'Server error' });
+    }
+});
+
+// NEW: This endpoint provides a simple list for the history dropdown.
+app.get('/api/elections/history', async (req, res) => {
+    try {
+        const now = new Date();
+        const finishedElections = await Election.find({
+            $or: [{ closed: true }, { endAt: { $ne: null, $lt: now }}]
+        })
+        .sort({ endAt: -1 })
+        .select('title onChainId') // Only select the fields we need
+        .lean();
+        
+        res.json(finishedElections);
+    } catch (err) {
+        console.error('history err', err);
         res.status(500).json({ msg: 'Server error' });
     }
 });
