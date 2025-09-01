@@ -21,13 +21,13 @@ app.use(rateLimit({ windowMs: 15 * 60 * 1000, max: 200 }));
 
 // ---------- ENV ----------
 const PORT = process.env.PORT || 5000;
-const MONGO_URI = process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/hybridvote';
-const JWT_SECRET = process.env.JWT_SECRET || 'change_this_in_prod';
-const ADMIN_INVITE_CODE = process.env.ADMIN_INVITE_CODE || 'ADMIN2025';
-const RECAPTCHA_SECRET = process.env.RECAPTCHA_SECRET || '';
-const RPC_URL = process.env.RPC_URL_BSC_TESTNET || 'https://data-seed-prebsc-1-s1.binance.org:8545/';
-const CONTRACT_ADDRESS = process.env.CONTRACT_ADDRESS || '';
-const DEPLOYER_PRIVATE_KEY = process.env.DEPLOYER_PRIVATE_KEY || '';
+const MONGO_URI = process.env.MONGO_URI;
+const JWT_SECRET = process.env.JWT_SECRET;
+const ADMIN_INVITE_CODE = process.env.ADMIN_INVITE_CODE;
+const RECAPTCHA_SECRET = process.env.RECAPTCHA_SECRET;
+const RPC_URL = process.env.RPC_URL_BSC_TESTNET;
+const CONTRACT_ADDRESS = process.env.CONTRACT_ADDRESS;
+const DEPLOYER_PRIVATE_KEY = process.env.DEPLOYER_PRIVATE_KEY;
 
 // ---------- MONGOOSE MODELS ----------
 mongoose.set('strictQuery', false);
