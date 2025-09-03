@@ -37,7 +37,7 @@ const userSchema = new mongoose.Schema({
   passwordHash: String,
   name: String,
   role: { type: String, enum: ['user','admin'], default: 'user' },
-  walletAddress: { type: String, default: null, index: true, sparse: true }, // This line is the problem
+  walletAddress: { type: String, default: null, index: true, sparse: true },
   hasVotedOn: { type: Map, of: Boolean, default: {} },
   walletNonce: { type: String, default: null },
 }, { timestamps: true });
@@ -70,7 +70,7 @@ const BlacklistedToken = mongoose.model('BlacklistedToken', blacklistedTokenSche
 const Election = mongoose.model('Election', electionSchema);
 
 // ---------- CONTRACT SETUP ----------
-const contractABI = [
+const contractABI =[
     {
       "inputs": [],
       "stateMutability": "nonpayable",
@@ -621,7 +621,9 @@ app.post('/api/auth/verify-link', authMiddleware, async (req,res) => {
     const nonce = req.user.walletNonce;
     if (!nonce) return res.status(400).json({ msg: 'No challenge issued. Please request a challenge first.' });
 
-    const message = `Link your wallet to HybridVote by signing this message. Nonce: ${nonce}`;
+    // NOTE: The message here MUST EXACTLY MATCH the one in your frontend `linkWallet` function.
+    // I noticed your old code said "HybridVote". I've kept it as "AuraVote" from the challenge endpoint.
+    const message = `Link your wallet to AuraVote by signing this message. Nonce: ${nonce}`;
     let recovered;
     try {
       recovered = ethers.verifyMessage(message, signature);
@@ -668,18 +670,13 @@ app.get('/api/elections/results', async (req, res) => {
         let election;
 
         if (id) {
-            // If a specific ID is requested, find that election.
             election = await Election.findOne({ onChainId: id }).lean();
         } else {
-            // Otherwise, find the default election (active first, then most recently finished).
-            // 1. Try to find an active election first.
             election = await Election.findOne({ 
                 closed: false,
                 $or: [{ startAt: null }, { startAt: { $lte: now } }],
                 $or: [{ endAt: null }, { endAt: { $gte: now }}]
             }).sort({ createdAt: -1 }).lean();
-
-            // 2. If no active election is found, find the most recently finished one.
             if (!election) {
                 election = await Election.findOne({
                     $or: [{ closed: true }, { endAt: { $ne: null, $lt: now }}]
@@ -689,7 +686,6 @@ app.get('/api/elections/results', async (req, res) => {
         
         if (!election) return res.status(404).json({ msg: 'No election results found.' });
         
-        // Add a status field to the response for the frontend
         let status = 'Finished';
         if (election.closed) {
             status = 'Closed';
@@ -700,16 +696,13 @@ app.get('/api/elections/results', async (req, res) => {
             else if (end && now > end) status = 'Finished';
             else status = 'Live';
         }
-
         res.json({ title: election.title, results: election.candidates, status });
-
     } catch(err) {
         console.error('results err', err);
         res.status(500).json({ msg: 'Server error' });
     }
 });
 
-// NEW: This endpoint provides a simple list for the history dropdown.
 app.get('/api/elections/history', async (req, res) => {
     try {
         const now = new Date();
@@ -717,9 +710,8 @@ app.get('/api/elections/history', async (req, res) => {
             $or: [{ closed: true }, { endAt: { $ne: null, $lt: now }}]
         })
         .sort({ endAt: -1 })
-        .select('title onChainId') // Only select the fields we need
+        .select('title onChainId')
         .lean();
-        
         res.json(finishedElections);
     } catch (err) {
         console.error('history err', err);
@@ -753,15 +745,11 @@ app.post('/api/admin/elections', authMiddleware, adminOnly, async (req,res) => {
     if (!onChainId) throw new Error("Could not find ElectionCreated event in transaction logs.");
 
     const doc = new Election({
-      title,
-      description,
-      onChainId,
+      title, description, onChainId,
       startAt: startAt ? new Date(startAt) : null,
       endAt: endAt ? new Date(endAt) : null,
-      closed: false,
-      candidates: []
+      closed: false, candidates: []
     });
-
     await doc.save();
     res.json({ ok:true, txHash: receipt.hash, onChainId });
   } catch (err) {
@@ -774,12 +762,9 @@ app.post('/api/admin/elections/:onChainId/candidates', authMiddleware, adminOnly
   try {
     const { onChainId } = req.params;
     const { name, party } = req.body;
-
     if (!contract) return res.status(500).json({ msg: 'Contract not configured' });
-
     const tx = await contract.addCandidate(onChainId, name || 'Candidate', party || '');
     const receipt = await tx.wait();
-
     res.json({ ok:true, txHash: receipt.hash });
   } catch (err) {
     console.error('add candidate err', err);
@@ -787,19 +772,13 @@ app.post('/api/admin/elections/:onChainId/candidates', authMiddleware, adminOnly
   }
 });
 
-// NEW: Endpoint for an admin to close an election
 app.post('/api/admin/elections/:onChainId/close', authMiddleware, adminOnly, async (req, res) => {
   try {
     const { onChainId } = req.params;
     if (!contract) return res.status(500).json({ msg: 'Contract not configured' });
-
-    // Send the transaction to the blockchain
     const tx = await contract.toggleCloseElection(onChainId, true);
     const receipt = await tx.wait();
-
-    // Update the election status in our database
     await Election.updateOne({ onChainId }, { $set: { closed: true } });
-
     res.json({ ok: true, txHash: receipt.hash });
   } catch (err) {
     console.error('close election err', err);
@@ -807,45 +786,42 @@ app.post('/api/admin/elections/:onChainId/close', authMiddleware, adminOnly, asy
   }
 });
 
-
 app.post('/api/verify/vote', authMiddleware, async (req,res) => {
   try {
     const { txHash, electionId, candidateId } = req.body;
     if (!txHash) return res.status(400).json({ msg: 'txHash required' });
-
     const receipt = await provider.getTransactionReceipt(txHash);
     if (!receipt || receipt.status === 0) return res.status(400).json({ msg:'Transaction failed or not found' });
-
     const iface = new Interface(contractABI);
-    const votedLog = receipt.logs.map(log => {
-        try { return iface.parseLog(log); } catch { return null; }
-    }).find(log => log && log.name === 'Voted');
-
+    const votedLog = receipt.logs.map(log => { try { return iface.parseLog(log); } catch { return null; } }).find(log => log && log.name === 'Voted');
     if (!votedLog) return res.status(400).json({ msg: 'No Voted event found in transaction' });
-
     const { electionId: evElectionId, candidateId: evCandidateId, voter: evVoter } = votedLog.args;
-
-    if (evElectionId.toString() !== electionId.toString() || evCandidateId.toString() !== candidateId.toString()) {
-        return res.status(400).json({ msg:'Event data does not match request' });
-    }
-
+    if (evElectionId.toString() !== electionId.toString() || evCandidateId.toString() !== candidateId.toString()) { return res.status(400).json({ msg:'Event data does not match request' }); }
     if (!req.user.walletAddress) return res.status(400).json({ msg:'User has no linked wallet' });
     if (req.user.walletAddress.toLowerCase() !== evVoter.toLowerCase()) return res.status(400).json({ msg:'Vote was cast by a different wallet' });
-
     req.user.hasVotedOn.set(electionId.toString(), true);
     await User.findByIdAndUpdate(req.user._id, { $set: { [`hasVotedOn.${electionId}`]: true } });
-
-    await Election.updateOne(
-        { onChainId: electionId.toString(), 'candidates.onChainId': candidateId.toString() },
-        { $inc: { votesTotal: 1, 'candidates.$.votes': 1 } }
-    );
-
+    await Election.updateOne({ onChainId: electionId.toString(), 'candidates.onChainId': candidateId.toString() }, { $inc: { votesTotal: 1, 'candidates.$.votes': 1 } });
     res.json({ ok:true });
   } catch (err) {
     console.error('verify vote err', err);
     res.status(500).json({ msg: 'Verification failed', error: err.message });
   }
 });
+
+// --- THIS IS THE NEW, CORRECTLY PLACED BLOCK ---
+app.post('/api/auth/disconnect-wallet', authMiddleware, async (req, res) => {
+    try {
+        req.user.walletAddress = null;
+        await req.user.save();
+        const { _id, name, email, role, walletAddress, hasVotedOn } = req.user;
+        res.json({ id: _id, name, email, role, walletAddress, hasVotedOn });
+    } catch (err) {
+        console.error('Disconnect wallet error:', err);
+        res.status(500).json({ msg: 'Server error while disconnecting wallet.' });
+    }
+});
+// --- END OF NEW BLOCK ---
 
 // ---------- EVENT LISTENER ----------
 if (contractRead) {
@@ -855,14 +831,8 @@ if (contractRead) {
       const onChainId = electionId.toString();
       const candidateChainId = candidateId.toString();
       const el = await Election.findOne({ onChainId });
-
       if (el && !el.candidates.some(c => c.onChainId === candidateChainId)) {
-        el.candidates.push({
-          onChainId: candidateChainId,
-          name: name.toString(),
-          party: party.toString(),
-          votes: 0
-        });
+        el.candidates.push({ onChainId: candidateChainId, name: name.toString(), party: party.toString(), votes: 0 });
         await el.save();
         console.log(`[EVENT] Synced CandidateAdded: Election ${onChainId}, Candidate ${candidateChainId}`);
       }
