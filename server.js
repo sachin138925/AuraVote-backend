@@ -502,7 +502,7 @@ const contractRead = CONTRACT_ADDRESS ? new ethers.Contract(CONTRACT_ADDRESS, co
 
 // ---------- HELPERS ----------
 function signToken(user) {
-  return jwt.sign({ id: user._id.toString(), role: user.role, email: user.email || null }, JWT_SECRET, { expiresIn: '7d' });
+  return jwt.sign({ id: user._id.toString(), role: user.role, email: user.email || null }, JWT_SECRET, { expiresIn: '24h' });
 }
 
 async function authMiddleware(req, res, next) {
@@ -621,9 +621,10 @@ app.post('/api/auth/verify-link', authMiddleware, async (req,res) => {
     const nonce = req.user.walletNonce;
     if (!nonce) return res.status(400).json({ msg: 'No challenge issued. Please request a challenge first.' });
 
-    // NOTE: The message here MUST EXACTLY MATCH the one in your frontend `linkWallet` function.
-    // I noticed your old code said "HybridVote". I've kept it as "AuraVote" from the challenge endpoint.
+    // --- FIX IS HERE ---
+    // The message MUST match the one from the /challenge endpoint exactly.
     const message = `Link your wallet to AuraVote by signing this message. Nonce: ${nonce}`;
+    
     let recovered;
     try {
       recovered = ethers.verifyMessage(message, signature);
@@ -653,10 +654,14 @@ app.get('/api/elections', async (req,res) => {
 });
 
 app.get('/api/elections/active', async (req,res) => {
+  const now = new Date();
   const el = await Election.findOne({
-    closed: false,
-    startAt: { $lte: new Date() },
-    $or: [{ endAt: null }, { endAt: { $gte: new Date() }}]
+    closed: false, // Must not be manually closed
+    startAt: { $lte: now }, // Start date must be in the past
+    $or: [
+      { endAt: null }, // Or it has no end date
+      { endAt: { $gte: now } } // Or its end date is in the future
+    ]
   }).sort({ createdAt: -1 }).lean();
 
   if (!el) return res.status(404).json({ msg: 'No active election' });
@@ -669,18 +674,23 @@ app.get('/api/elections/results', async (req, res) => {
         const now = new Date();
         let election;
 
-        if (id) {
+        if (id && id !== 'current') {
+            // If a specific ID is requested, find that election.
             election = await Election.findOne({ onChainId: id }).lean();
         } else {
-            election = await Election.findOne({ 
-                closed: false,
-                $or: [{ startAt: null }, { startAt: { $lte: now } }],
-                $or: [{ endAt: null }, { endAt: { $gte: now }}]
-            }).sort({ createdAt: -1 }).lean();
+            // Otherwise, find the *most recently finished* election as the default.
+            election = await Election.findOne({
+                // An election is considered finished if it's closed OR its end date has passed
+                $or: [{ closed: true }, { endAt: { $ne: null, $lt: now } }]
+            }).sort({ endAt: -1, createdAt: -1 }).lean(); // Sort by end date first, then creation date
+
+            // If no finished election is found, THEN look for a live one.
             if (!election) {
                 election = await Election.findOne({
-                    $or: [{ closed: true }, { endAt: { $ne: null, $lt: now }}]
-                }).sort({ endAt: -1 }).lean();
+                    closed: false,
+                    startAt: { $lte: now },
+                    $or: [{ endAt: null }, { endAt: { $gte: now } }]
+                }).sort({ createdAt: -1 }).lean();
             }
         }
         
@@ -693,10 +703,12 @@ app.get('/api/elections/results', async (req, res) => {
             const start = election.startAt ? new Date(election.startAt) : null;
             const end = election.endAt ? new Date(election.endAt) : null;
             if (start && now < start) status = 'Scheduled';
-            else if (end && now > end) status = 'Finished';
+            else if (end && now > end) status = 'Finished'; // This now correctly marks ended elections
             else status = 'Live';
         }
+
         res.json({ title: election.title, results: election.candidates, status });
+
     } catch(err) {
         console.error('results err', err);
         res.status(500).json({ msg: 'Server error' });
